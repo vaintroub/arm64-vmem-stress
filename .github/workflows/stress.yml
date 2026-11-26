@@ -1,0 +1,56 @@
+name: vmem-stress
+
+on:
+  workflow_dispatch:
+    inputs:
+      runner:
+        description: runner label
+        default: windows-11-arm
+      procs:
+        description: number of parallel processes
+        default: '16'
+      seconds:
+        description: duration of each configuration
+        default: '120'
+
+jobs:
+  stress:
+    runs-on: ${{ inputs.runner }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: System info
+        shell: pwsh
+        run: |
+          "arch: $env:PROCESSOR_ARCHITECTURE, cpus: $env:NUMBER_OF_PROCESSORS"
+          Get-CimInstance Win32_OperatingSystem | Format-List Caption, Version, TotalVisibleMemorySize, TotalVirtualMemorySize
+          Get-CimInstance Win32_PageFileUsage | Format-List Name, AllocatedBaseSize, CurrentUsage
+
+      - name: Build
+        shell: cmd
+        run: |
+          for /f "usebackq tokens=*" %%i in (`"%ProgramFiles(x86)%\Microsoft Visual Studio\Installer\vswhere.exe" -latest -property installationPath`) do set VS=%%i
+          call "%VS%\VC\Auxiliary\Build\vcvarsall.bat" %PROCESSOR_ARCHITECTURE:ARM64=arm64%
+          cl /nologo /O2 /D_CRT_SECURE_NO_WARNINGS stress.c /Fe:stress.exe psapi.lib
+
+      # Same load (128 MB committed per process), different reservations.
+      # A big difference between them is the finding.
+      - name: 8 TB reservation (as mariadbd default)
+        if: always()
+        shell: pwsh
+        run: .\stress.exe --procs ${{ inputs.procs }} --seconds ${{ inputs.seconds }} --reserve-gb 8192
+
+      - name: 128 GB reservation
+        if: always()
+        shell: pwsh
+        run: .\stress.exe --procs ${{ inputs.procs }} --seconds ${{ inputs.seconds }} --reserve-gb 128
+
+      - name: no reservation (baseline)
+        if: always()
+        shell: pwsh
+        run: .\stress.exe --procs ${{ inputs.procs }} --seconds ${{ inputs.seconds }} --reserve-gb 0
+
+      - name: 8 TB reservation, plus commit/decommit churn
+        if: always()
+        shell: pwsh
+        run: .\stress.exe --procs ${{ inputs.procs }} --seconds ${{ inputs.seconds }} --reserve-gb 8192 --churn
