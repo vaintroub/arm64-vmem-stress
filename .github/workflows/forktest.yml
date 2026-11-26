@@ -1,0 +1,43 @@
+name: perl-fork-test
+
+on:
+  workflow_dispatch:
+    inputs:
+      runner:
+        description: runner label
+        default: windows-11-arm
+
+jobs:
+  fork:
+    runs-on: ${{ inputs.runner }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Perl info
+        shell: pwsh
+        run: |
+          $env:PATH = "C:\Strawberry\perl\bin;$env:PATH"
+          perl -v | Select-String 'This is'
+          $b = [IO.File]::ReadAllBytes((Get-Command perl).Source)
+          'perl.exe PE machine: {0:X4} (8664=x64 emulated, AA64=ARM64)' -f [BitConverter]::ToUInt16($b, [BitConverter]::ToInt32($b, 0x3C) + 4)
+
+      - name: Fork counts around the suspicious boundaries
+        shell: pwsh
+        run: |
+          $env:PATH = "C:\Strawberry\perl\bin;$env:PATH"
+          $bad = 0
+          foreach ($mode in '', 'spawn') {
+            foreach ($n in 8,16,30,31,32,33,34,48,62,63,64,65) {
+              $p = Start-Process perl -ArgumentList "forktest.pl $n $mode" -PassThru -NoNewWindow -RedirectStandardOutput "out.txt" -RedirectStandardError "err.txt"
+              if (-not $p.WaitForExit(120000)) {
+                Stop-Process -Id $p.Id -Force
+                "N=$n mode='$mode': HANG (killed after 120 s)"; $bad++
+                continue
+              }
+              $o = (Get-Content out.txt, err.txt -ErrorAction SilentlyContinue) -join ' | '
+              "N=$n mode='$mode' exit=$($p.ExitCode): $o"
+              if ($p.ExitCode -ne 0) { $bad++ }
+            }
+          }
+          "problems: $bad"
+          # 65 is expected to fail (perl's 64 pseudo-process limit); do not fail the job
